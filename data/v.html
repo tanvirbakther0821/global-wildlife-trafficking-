@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Wildlife Trafficking Incidents Choropleth Map</title>
+
+    <!-- Import D3 v5 and required libraries -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/5.16.0/d3.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/d3-legend/2.25.6/d3-legend.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/d3-tip/0.9.1/d3-tip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/topojson/3.0.2/topojson.min.js"></script>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            color: #333;
+        }
+
+        #dropdown-container {
+            text-align: center;
+            margin: 20px 0;
+        }
+
+        select {
+            padding: 5px 10px;
+            font-size: 14px;
+        }
+
+        .countries {
+            fill: #ccc;
+            stroke: #fff;
+            stroke-width: 0.5px;
+        }
+
+        .countries:hover {
+            stroke: #333;
+            stroke-width: 1.5px;
+        }
+
+        .legendQuant {
+            font-size: 12px;
+        }
+
+        .d3-tip {
+            line-height: 1.4;
+            padding: 12px;
+            background: rgba(0, 0, 0, 0.8);
+            color: #fff;
+            border-radius: 4px;
+            font-size: 12px;
+            pointer-events: none;
+        }
+
+        .d3-tip:after {
+            box-sizing: border-box;
+            display: inline;
+            font-size: 10px;
+            width: 100%;
+            line-height: 1;
+            color: rgba(0, 0, 0, 0.8);
+            content: "\25BC";
+            position: absolute;
+            text-align: center;
+        }
+
+        .d3-tip.n:after {
+            margin: -1px 0 0 0;
+            top: 100%;
+            left: 0;
+        }
+
+        #username {
+            text-align: center;
+            margin-top: 20px;
+            font-size: 14px;
+            color: #666;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Wildlife Trafficking Incidents by Country</h1>
+
+    <div id="dropdown-container">
+        <label for="year-dropdown">Select Year: </label>
+        <select id="year-dropdown"></select>
+    </div>
+
+    <div id="map-container"></div>
+
+    <div id="username">gburdell3</div>
+
+    <script>
+        // Define margin and dimensions for svg
+        const margin = {top: 20, right: 20, bottom: 20, left: 20};
+        const width = 960 - margin.left - margin.right;
+        const height = 600 - margin.top - margin.bottom;
+
+        // Create svg
+        const svg = d3.select("#map-container")
+            .append("svg")
+            .attr("width", width + margin.left + margin.right)
+            .attr("height", height + margin.top + margin.bottom)
+            .append("g")
+            .attr("transform", `translate(${margin.left},${margin.top})`);
+
+        // Create color scale - using 4 colors from yellow to red
+        const colorScale = d3.scaleQuantile()
+            .range(["#ffffb2", "#fecc5c", "#fd8d3c", "#e31a1c"]);
+
+        // Define tooltip using d3-tip
+        const tip = d3.tip()
+            .attr('class', 'd3-tip')
+            .offset([-10, 0])
+            .html(function(d) {
+                const data = d.properties.traffickingData;
+                if (!data || data.incidents === undefined) {
+                    return `<strong>${d.properties.name}</strong><br/>
+                            Year: ${d.properties.year}<br/>
+                            Number of Incidents: N/A<br/>
+                            Average Fine: N/A<br/>
+                            Average Imprisonment: N/A`;
+                }
+                return `<strong>${d.properties.name}</strong><br/>
+                        Year: ${d.properties.year}<br/>
+                        Number of Incidents: ${data.incidents}<br/>
+                        Average Fine: $${data.fine.toFixed(2)}<br/>
+                        Average Imprisonment: ${data.imprisonment.toFixed(2)} years`;
+            });
+
+        svg.call(tip);
+
+        // Define projection and path for Choropleth
+        const projection = d3.geoNaturalEarth1()
+            .scale(150)
+            .translate([width / 2, height / 2]);
+
+        const path = d3.geoPath()
+            .projection(projection);
+
+        // Global variables
+        let worldData;
+        let traffickingDataGlobal;
+
+        // Read files using Promise.all
+        Promise.all([
+            d3.json("world_countries.json"),
+            d3.csv("wildlife_trafficking.csv")
+        ]).then(function(data) {
+            ready(null, data[0], data[1]);
+        });
+
+        function ready(error, world, traffickingData) {
+            if (error) throw error;
+
+            // Store data globally
+            worldData = world;
+            traffickingDataGlobal = traffickingData;
+
+            // Process trafficking data
+            traffickingData.forEach(d => {
+                d.Year = +d.Year;
+                d.Number_of_Incidents = +d.Number_of_Incidents;
+                d.Average_Fine = +d.Average_Fine;
+                d.Average_Imprisonment = +d.Average_Imprisonment;
+            });
+
+            // Extract unique years and sort them
+            const years = [...new Set(traffickingData.map(d => d.Year))].sort((a, b) => a - b);
+
+            // Populate dropdown with years
+            const dropdown = d3.select("#year-dropdown");
+            dropdown.selectAll("option")
+                .data(years)
+                .enter()
+                .append("option")
+                .text(d => d)
+                .attr("value", d => d);
+
+            // Event listener for dropdown changes
+            dropdown.on("change", function() {
+                const selectedYear = +this.value;
+                createMapAndLegend(world, traffickingData, selectedYear);
+            });
+
+            // Create initial map with first year
+            createMapAndLegend(world, traffickingData, years[0]);
+        }
+
+        function createMapAndLegend(world, traffickingData, selectedYear) {
+            // Filter data for selected year
+            const yearData = traffickingData.filter(d => d.Year === selectedYear);
+
+            // Create a map for quick lookup
+            const dataMap = {};
+            yearData.forEach(d => {
+                dataMap[d["Country of Incident"]] = {
+                    incidents: d.Number_of_Incidents,
+                    fine: d.Average_Fine,
+                    imprisonment: d.Average_Imprisonment
+                };
+            });
+
+            // Get all incident values for the selected year to calculate quantiles
+            const incidentValues = yearData
+                .map(d => d.Number_of_Incidents)
+                .filter(v => v !== undefined && !isNaN(v));
+
+            // Update color scale domain with incident values
+            colorScale.domain(incidentValues);
+
+            // Convert TopoJSON to GeoJSON
+            const countries = topojson.feature(world, world.objects.countries).features;
+
+            // Attach data to countries
+            countries.forEach(country => {
+                country.properties.year = selectedYear;
+                country.properties.traffickingData = dataMap[country.properties.name];
+            });
+
+            // Remove existing paths and legend
+            svg.selectAll(".countries").remove();
+            svg.selectAll(".legendQuant").remove();
+
+            // Draw countries
+            svg.selectAll(".countries")
+                .data(countries)
+                .enter()
+                .append("path")
+                .attr("class", "countries")
+                .attr("d", path)
+                .style("fill", d => {
+                    const data = d.properties.traffickingData;
+                    if (!data || data.incidents === undefined) {
+                        return "#ccc"; // Gray for no data
+                    }
+                    return colorScale(data.incidents);
+                })
+                .on('mouseover', tip.show)
+                .on('mouseout', tip.hide);
+
+            // Create legend
+            const legend = d3.legendColor()
+                .labelFormat(d3.format(".2f"))
+                .scale(colorScale)
+                .shapePadding(5)
+                .shapeWidth(50)
+                .shapeHeight(20)
+                .labelOffset(12);
+
+            svg.append("g")
+                .attr("class", "legendQuant")
+                .attr("transform", `translate(${width - 150}, ${height - 200})`)
+                .call(legend);
+        }
+    </script>
+</body>
+</html>

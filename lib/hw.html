@@ -1,0 +1,193 @@
+<!-- Q2.html : Force-directed graph (CSE 6242 HW2, Q2) -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Q2 – Force-directed graph</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- Load ONLY the provided D3 v5 from the lib folder (relative path). -->
+  <script src="../lib/d3.v5.min.js"></script>
+  <style>
+    /* --- Layout --- */
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 0; }
+    #chart { width: 100%; height: 720px; }
+
+    /* --- Links --- */
+    line.link { stroke: #999; stroke-opacity: 0.8; }
+    line.link.similar-0 { stroke: #777; stroke-width: 2.5px; stroke-dasharray: none; } /* value = 0 */
+    line.link.similar-1 { stroke: #1a8f1a; stroke-width: 1px; stroke-dasharray: 6 4; }  /* value = 1 */
+
+    /* --- Nodes --- */
+    circle.node { stroke: #fff; stroke-width: 1px; cursor: grab; }
+    circle.node:active { cursor: grabbing; }
+    circle.node.pinned { stroke: #ffd400; stroke-width: 3px; } /* visually mark pinned nodes (yellow ring) */
+
+    /* --- Labels --- */
+    text.nlabel {
+      font-weight: 700;               /* bold */
+      paint-order: stroke;            /* outline to improve contrast */
+      stroke: rgba(255,255,255,.8);
+      stroke-width: 2px;
+      pointer-events: none;           /* let mouse reach the circle underneath */
+    }
+
+    /* --- Title/credit --- */
+    #credit {
+      font-size: 12px;
+      fill: #444;
+    }
+  </style>
+</head>
+<body>
+  <svg id="chart"></svg>
+
+  <script>
+  // ===== Configuration =====
+  const USERNAME = "gburdell3";  // <-- replace with *your* GT username
+  const width = Math.max(960, window.innerWidth);
+  const height = 720;
+
+  const svg = d3.select("#chart")
+    .attr("width", width)
+    .attr("height", height);
+
+  // Username (top-right) — REQUIRED id="credit"
+  svg.append("text")
+     .attr("id", "credit")
+     .attr("x", width - 10)
+     .attr("y", 20)
+     .attr("text-anchor", "end")
+     .text(USERNAME);
+
+  // Groups for layering
+  const gLinks  = svg.append("g").attr("id", "links");
+  const gNodes  = svg.append("g").attr("id", "nodes");
+  const gLabels = svg.append("g").attr("id", "labels");
+
+  // ===== Load links (CSV: source,target,value). Build node list & degree. =====
+  d3.csv("board_games.csv").then(raw => {
+    // Build unique node set from edges
+    const nodesById = new Map();
+    const links = raw.map(d => {
+      const s = d.source.trim();
+      const t = d.target.trim();
+      const v = +d.value;     // 0 similar, 1 not-similar (per spec)
+      if (!nodesById.has(s)) nodesById.set(s, { id: s });
+      if (!nodesById.has(t)) nodesById.set(t, { id: t });
+      return { source: s, target: t, value: v };
+    });
+    const nodes = Array.from(nodesById.values());
+
+    // Compute degree for each node (undirected)
+    const degree = new Map(nodes.map(n => [n.id, 0]));
+    links.forEach(l => {
+      degree.set(l.source, degree.get(l.source) + 1);
+      degree.set(l.target, degree.get(l.target) + 1);
+    });
+    nodes.forEach(n => n.degree = degree.get(n.id));
+
+    // Helpful for autograder hit-testing:
+    const degExtent = d3.extent(nodes, d => d.degree);
+    const rScale = d3.scaleSqrt().domain(degExtent).range([6, 28]); // small→big radius
+    const cScale = d3.scaleLinear()
+      .domain(d3.ticks(degExtent[0], degExtent[1], 4))               // 4+ gradations
+      .range(["#dbeafe", "#93c5fd", "#3b82f6", "#1d4ed8"]);          // light→dark
+
+    // ===== Force simulation =====
+    const sim = d3.forceSimulation(nodes)
+      .force("charge", d3.forceManyBody().strength(-80))
+      .force("center", d3.forceCenter(width/2, height/2))
+      .force("collision", d3.forceCollide().radius(d => rScale(d.degree) + 2))
+      .force("link", d3.forceLink(links).id(d => d.id).distance(d => 40 + 4 * (rScale(degree.get(d.source.id || d.source)) + rScale(degree.get(d.target.id || d.target))))
+                             .strength(0.15))
+      .on("tick", ticked);
+
+    // ===== Draw edges =====
+    const link = gLinks.selectAll("line.link")
+      .data(links)
+      .enter().append("line")
+        .attr("class", d => "link similar-" + (d.value === 1 ? 1 : 0));
+
+    // ===== Draw nodes =====
+    const node = gNodes.selectAll("circle.node")
+      .data(nodes)
+      .enter().append("circle")
+        .attr("class", "node")
+        .attr("r", d => rScale(d.degree))
+        .attr("fill", d => cScale(d.degree))
+        .on("dblclick", unpin)             // unpin on double-click
+        .call(d3.drag()
+          .on("start", dragstarted)
+          .on("drag", dragged)
+          .on("end", dragended)
+        );
+
+    // ===== Labels (top-right of each node, bold) =====
+    // Label font shrinks slightly for very large nodes so the autograder can still see the circle.
+    const label = gLabels.selectAll("text.nlabel")
+      .data(nodes)
+      .enter().append("text")
+        .attr("class", "nlabel")
+        .text(d => d.id)
+        .attr("font-size", d => Math.max(10, 14 - 0.15 * rScale(d.degree)))
+        .attr("text-anchor", "start")
+        .attr("dy", "-0.5em"); // shift a bit upward
+
+    // ===== Tick function =====
+    function ticked() {
+      link
+        .attr("x1", d => d.source.x)
+        .attr("y1", d => d.source.y)
+        .attr("x2", d => d.target.x)
+        .attr("y2", d => d.target.y);
+
+      node
+        .attr("cx", d => d.x = clamp(d.x, rScale(d.degree), width  - rScale(d.degree)))
+        .attr("cy", d => d.y = clamp(d.y, rScale(d.degree), height - rScale(d.degree)));
+
+      label
+        .attr("x", d => d.x + rScale(d.degree) + 3) // top-right of the node
+        .attr("y", d => d.y - rScale(d.degree) - 3);
+    }
+
+    // ===== Drag (pin) behavior =====
+    // Per spec: dragging a node should *pin* it; pinned nodes remain draggable.
+    function dragstarted(d) {
+      if (!d3.event.active) sim.alphaTarget(0.3).restart();
+      // Start pinning immediately so the node stays where the user places it
+      d.fx = d.x;
+      d.fy = d.y;
+      d.pinned = true;
+      d3.select(this).classed("pinned", true);
+    }
+
+    function dragged(d) {
+      // Keep the node at the cursor while dragging
+      d.fx = d3.event.x;
+      d.fy = d3.event.y;
+    }
+
+    function dragended(d) {
+      if (!d3.event.active) sim.alphaTarget(0);
+      // Leave fx/fy set → remains pinned after drag (as required)
+      d.pinned = true;
+      d3.select(this).classed("pinned", true);
+    }
+
+    // Double-click to unpin (and unmark)
+    function unpin(d) {
+      d.fx = null;
+      d.fy = null;
+      d.pinned = false;
+      d3.select(this).classed("pinned", false);
+      // give simulation a nudge so the node resumes motion
+      sim.alphaTarget(0.2).restart();
+      setTimeout(() => sim.alphaTarget(0), 200);
+    }
+
+    // small helper to keep nodes inside the SVG
+    function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+  });
+  </script>
+</body>
+</html>

@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<head>
+<style>
+
+path.link {
+  fill: none;
+  stroke-width: 1.5px;
+}
+
+path.link.similar {
+  stroke: gray;
+  stroke-width: 3px;
+  stroke-dasharray: none;
+}
+
+path.link.not-similar {
+  stroke: green;
+  stroke-width: 1px;
+  stroke-dasharray: 5,5;
+}
+
+circle {
+  stroke: black;
+  stroke-width: 1.5px;
+}
+
+circle.pinned {
+  stroke: yellow;
+  stroke-width: 3px;
+}
+
+text {
+  fill: #000;
+  font: 10px sans-serif;
+  pointer-events: none;
+}
+
+text.node-label {
+  font-weight: bold;
+  font-size: 10px;
+}
+
+</style>
+<meta charset="utf-8">
+<title></title>
+</head>
+
+<body>
+<script type="text/javascript" src="../lib/d3.v5.min.js"></script>
+<script>
+
+d3.dsv(",", "board_games.csv", function(d) {
+  return {
+    source: d.source,
+    target: d.target,
+    value: +d.value
+  }
+}).then(function(data) {
+
+  var links = data;
+  var nodes = {};
+
+  // compute the distinct nodes from the links and calculate degrees
+  links.forEach(function(link) {
+      link.source = nodes[link.source] || (nodes[link.source] = {name: link.source, degree: 0});
+      link.target = nodes[link.target] || (nodes[link.target] = {name: link.target, degree: 0});
+
+      // Calculate node degrees
+      link.source.degree++;
+      link.target.degree++;
+  });
+
+  // Find min and max degrees for scaling
+  var nodeArray = Object.values(nodes);
+  var minDegree = d3.min(nodeArray, function(d) { return d.degree; });
+  var maxDegree = d3.max(nodeArray, function(d) { return d.degree; });
+
+  // Create radius scale
+  var radiusScale = d3.scaleLinear()
+    .domain([minDegree, maxDegree])
+    .range([5, 20]);
+
+  // Discrete color buckets to guarantee ≥3 gradations
+  var colorRange = [
+    '#dbeafe', // light
+    '#93c5fd',
+    '#60a5fa',
+    '#3b82f6',
+    '#1d4ed8'  // dark
+  ];
+
+  // If all degrees are equal (min === max), widen the domain a bit so quantize still works
+  var cMin = (minDegree === maxDegree) ? minDegree - 0.5 : minDegree;
+  var cMax = (minDegree === maxDegree) ? maxDegree + 0.5 : maxDegree;
+
+  var colorScale = d3.scaleQuantize()
+    .domain([cMin, cMax])
+    .range(colorRange);
+
+  var width = 1200,
+      height = 700;
+
+  var force = d3.forceSimulation()
+      .nodes(Object.values(nodes))  // FIX: use Object.values instead of d3.values
+      .force("link", d3.forceLink(links).distance(100))
+      .force('center', d3.forceCenter(width / 2, height / 2))
+      .force("x", d3.forceX())
+      .force("y", d3.forceY())
+      .force("charge", d3.forceManyBody().strength(-250))
+      .alphaTarget(1)
+      .on("tick", tick);
+
+  var svg = d3.select("body").append("svg")
+      .attr("width", width)
+      .attr("height", height);
+
+  // Add GT username in top right corner
+  svg.append("text")
+      .attr("id", "credit")
+      .attr("x", width - 10)
+      .attr("y", 20)
+      .attr("text-anchor", "end")
+      .text("gburdell3");  // Change this to your GT username
+
+  // add the links
+  var path = svg.append("g")
+      .selectAll("path")
+      .data(links)
+      .enter()
+      .append("path")
+      .attr("class", function(d) {  // FIX: use value, not type
+        return "link " + (d.value === 1 ? "not-similar" : "similar");
+      });
+
+  // define the nodes
+  var node = svg.selectAll(".node")
+      .data(force.nodes())
+      .enter().append("g")
+      .attr("class", "node")
+      .call(d3.drag()
+          .on("start", dragstarted)
+          .on("drag", dragged)
+          .on("end", dragended));
+
+  // add the nodes
+  node.append("circle")
+      .attr("id", function(d){
+         return (d.name.replace(/\s+/g,'').toLowerCase());
+      })
+      .attr("r", function(d) { return radiusScale(d.degree); })
+      .attr("fill", function(d) { return colorScale(d.degree); }); // Use attr for fill
+
+  // Add node labels
+  node.append("text")
+      .attr("class", "node-label")
+      .attr("dx", function(d) { return radiusScale(d.degree) + 2; })
+      .attr("dy", function(d) { return -radiusScale(d.degree) - 2; })
+      .text(function(d) { return d.name; });
+
+  // Add double-click to unpin functionality
+  node.on("dblclick", function(d) {
+    if (d.fixed === true) {
+      d.fixed = false;
+      d.fx = null;
+      d.fy = null;
+
+      var circleSel = d3.select(this).select("circle");
+      circleSel.classed("pinned", false);
+
+      // RESTORE DEGREE-BASED FILL (color changes back on unpin)
+      circleSel.attr("fill", colorScale(d.degree));
+
+      force.alphaTarget(0.3).restart();
+    }
+  });
+
+  // add the curvy lines
+  function tick() {
+      path.attr("d", function(d) {
+          var dx = d.target.x - d.source.x,
+              dy = d.target.y - d.source.y,
+              dr = Math.sqrt(dx * dx + dy * dy);
+          return "M" +
+              d.source.x + "," +
+              d.source.y + "A" +
+              dr + "," + dr + " 0 0,1 " +
+              d.target.x + "," +
+              d.target.y;
+      });
+
+      node.attr("transform", function(d) {
+          return "translate(" + d.x + "," + d.y + ")";
+      });
+  };
+
+  function dragstarted(d) {
+      if (!d3.event.active) force.alphaTarget(0.3).restart();
+      d.fx = d.x;
+      d.fy = d.y;
+
+      // Pin the node when dragging starts
+      d.fixed = true;
+      var circleSel = d3.select(this).select("circle")
+        .classed("pinned", true);
+
+      // store old fill so we can restore later if you like (optional)
+      circleSel.attr("data-old-fill", circleSel.attr("fill"));
+
+      // CHANGE FILL ON DRAG (pin)
+      circleSel.attr("fill", "#ffd400"); // yellow fill to indicate pinned
+  };
+
+  function dragged(d) {
+      d.fx = d3.event.x;
+      d.fy = d3.event.y;
+  };
+
+  function dragended(d) {
+      if (!d3.event.active) force.alphaTarget(0);
+      if (d.fixed == true) {
+          d.fx = d.x;
+          d.fy = d.y;
+      }
+      else {
+          d.fx = null;
+          d.fy = null;
+      }
+  };
+
+}).catch(function(error) {
+  console.log(error);
+});
+
+</script>
+</body>
+
+
